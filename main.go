@@ -56,7 +56,7 @@ func main() {
 	m := tui.New(host, c2Port, webPort, ciph, srv.Registry())
 
 	// Create the Bubble Tea program.
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	// Wire the program into the C2 server so handlers can send TUI messages.
 	srv.SetProgram(p)

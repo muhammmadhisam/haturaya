@@ -3,7 +3,9 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -130,6 +132,9 @@ type Model struct {
 
 	// log buffer — all lines ever appended
 	lines []string
+
+	// last generated payloads (payload strings only, for copy <n>)
+	lastPayloads []string
 
 	// refs injected at construction
 	registry *agent.Registry
@@ -374,40 +379,7 @@ func (m *Model) handlePayloadKey(msg tea.KeyMsg) tea.Cmd {
 			m.textInput.SetValue("")
 			m.textInput.Placeholder = ""
 			m.enterConsole()
-			webPort := strconv.Itoa(m.webPort)
-			cats := payload.Build(m.payloadLhost, lport, webPort)
-			pDir := payload.PayloadsDir()
-			if err := payload.WriteAgent(m.payloadLhost, lport, m.cipher.KeyHex(), pDir); err != nil {
-				m.appendLine(rawStyle.Render(fmt.Sprintf("[!] agent.py: %v", err)))
-			}
-			if err := payload.WriteXLSM(m.payloadLhost, lport, pDir); err != nil {
-				m.appendLine(rawStyle.Render(fmt.Sprintf("[!] payload.xlsm: %v", err)))
-			}
-			targetKey := strings.ToUpper(m.payloadShell)
-			var toShow map[string][]payload.Entry
-			if targetKey == "ALL" {
-				toShow = cats
-			} else {
-				toShow = map[string][]payload.Entry{targetKey: cats[targetKey]}
-			}
-			order := []string{"BASH", "SH", "PYTHON", "PERL", "RUBY", "PHP",
-				"NETCAT", "SOCAT", "OPENSSL", "POWERSHELL", "OTHER", "EXCEL"}
-			m.appendLine(encStyle.Render(fmt.Sprintf("══ %s payloads — %s:%s ══", m.payloadShell, m.payloadLhost, lport)))
-			for _, cat := range order {
-				entries, ok := toShow[cat]
-				if !ok || len(entries) == 0 {
-					continue
-				}
-				if targetKey == "ALL" {
-					m.appendLine(encStyle.Render(fmt.Sprintf("── %s", cat)))
-				}
-				for i, e := range entries {
-					m.appendLine(fmt.Sprintf("  [%d] %s", i+1, rawStyle.Render(e.Label)))
-					m.appendLine(fmt.Sprintf("      %s", e.Payload))
-					m.appendLine("")
-				}
-			}
-			m.appendLine(encStyle.Render(fmt.Sprintf("[KEY] %s", m.cipher.KeyHex())))
+			m.showPayloads(m.payloadLhost, lport, m.payloadShell)
 		case tea.KeyEsc:
 			m.payloadStep = payloadStepHost
 			m.textInput.SetValue(m.payloadLhost)
@@ -723,6 +695,9 @@ func (m *Model) dispatchConsole(line string) tea.Cmd {
 	case cmd == "kill" && len(parts) == 2:
 		m.cmdKill(parts[1])
 
+	case cmd == "copy" && len(parts) == 2:
+		m.cmdCopy(parts[1])
+
 	case cmd == "generate" && len(parts) >= 2 && strings.ToLower(parts[1]) == "payloads":
 		m.cmdGenerate(line)
 
@@ -793,7 +768,7 @@ func (m *Model) cmdGenerate(line string) {
 		shell = strings.ToLower(mShell[1])
 	}
 
-	validShells := payload.ShellTypes()
+	validShells := append(payload.ShellTypes(), "all")
 	valid := false
 	for _, s := range validShells {
 		if s == shell {
@@ -807,6 +782,11 @@ func (m *Model) cmdGenerate(line string) {
 		return
 	}
 
+	m.showPayloads(lhost, lport, shell)
+}
+
+// showPayloads generates and displays payloads, storing them in lastPayloads for copy <n>.
+func (m *Model) showPayloads(lhost, lport, shell string) {
 	webPort := strconv.Itoa(m.webPort)
 	cats := payload.Build(lhost, lport, webPort)
 
@@ -828,19 +808,60 @@ func (m *Model) cmdGenerate(line string) {
 
 	order := []string{"BASH", "SH", "PYTHON", "PERL", "RUBY", "PHP",
 		"NETCAT", "SOCAT", "OPENSSL", "POWERSHELL", "OTHER", "EXCEL"}
+
+	m.lastPayloads = nil
+	idx := 1
 	for _, cat := range order {
 		entries, ok := toShow[cat]
 		if !ok || len(entries) == 0 {
 			continue
 		}
-		m.appendLine(encStyle.Render(fmt.Sprintf("══ %s ══", cat)))
-		for i, e := range entries {
-			m.appendLine(fmt.Sprintf("  [%d] %s", i+1, rawStyle.Render(e.Label)))
+		m.appendLine(encStyle.Render(fmt.Sprintf("══ %s payloads — %s:%s ══", strings.ToLower(cat), lhost, lport)))
+		for _, e := range entries {
+			m.appendLine(fmt.Sprintf("  [%d] %s", idx, rawStyle.Render(e.Label)))
 			m.appendLine(fmt.Sprintf("      %s", e.Payload))
 			m.appendLine("")
+			m.lastPayloads = append(m.lastPayloads, e.Payload)
+			idx++
 		}
 	}
-	m.appendLine(encStyle.Render(fmt.Sprintf("[KEY] cipher key: %s", m.cipher.KeyHex())))
+	m.appendLine(encStyle.Render(fmt.Sprintf("[KEY] %s", m.cipher.KeyHex())))
+	m.appendLine(dimStyle.Render(fmt.Sprintf("  tip: copy <n> — copy payload to clipboard")))
+}
+
+func (m *Model) cmdCopy(ref string) {
+	n, err := strconv.Atoi(ref)
+	if err != nil || n < 1 || n > len(m.lastPayloads) {
+		if len(m.lastPayloads) == 0 {
+			m.appendLine(errorStyle.Render("[!] no payloads generated yet — run 'payloads' first"))
+		} else {
+			m.appendLine(errorStyle.Render(fmt.Sprintf("[!] invalid index — pick 1..%d", len(m.lastPayloads))))
+		}
+		return
+	}
+	text := m.lastPayloads[n-1]
+	if err := copyToClipboard(text); err != nil {
+		m.appendLine(errorStyle.Render(fmt.Sprintf("[!] clipboard error: %v", err)))
+		return
+	}
+	m.appendLine(encStyle.Render(fmt.Sprintf("[+] payload [%d] copied to clipboard", n)))
+}
+
+func copyToClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	default:
+		// Linux: try xclip first, then xsel
+		if _, err := exec.LookPath("xclip"); err == nil {
+			cmd = exec.Command("xclip", "-selection", "clipboard")
+		} else {
+			cmd = exec.Command("xsel", "--clipboard", "--input")
+		}
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }
 
 func (m *Model) appendAgentTable() {
