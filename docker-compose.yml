@@ -1,0 +1,51 @@
+networks:
+  haturaya-lab:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+services:
+  # ── Attacker — Haturaya C2 ────────────────────────────────────────────────
+  attacker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.attacker
+    image: haturaya-attacker
+    container_name: haturaya-attacker
+    hostname: attacker
+    networks:
+      haturaya-lab:
+        ipv4_address: 172.20.0.2
+    environment:
+      - LHOST=172.20.0.2
+      - LPORT=9999
+      - WEB_PORT=9090
+    ports:
+      - "9999:9999"   # C2 listener (agents connect here)
+      - "9090:9090"   # Payload web server
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./web_app/payloads:/opt/haturaya/web_app/payloads  # live-reload payloads
+
+  # ── Victim — Intentionally Vulnerable Linux ──────────────────────────────
+  victim:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.victim
+    image: haturaya-victim
+    container_name: haturaya-victim
+    hostname: victim
+    networks:
+      haturaya-lab:
+        ipv4_address: 172.20.0.3
+    ports:
+      - "2222:22"   # SSH (from host: ssh -p 2222 user@localhost)
+      - "8080:80"   # HTTP (from host: http://localhost:8080)
+    stdin_open: true
+    tty: true
+    cap_add:
+      - SYS_PTRACE   # allow strace/gdb on the victim
+    security_opt:
+      - seccomp:unconfined

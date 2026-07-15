@@ -1,0 +1,15 @@
+# Binary
+haturaya-c2
+
+# Python leftovers
+__pycache__/
+*.pyc
+*.pyo
+venv/
+
+# Go
+*.test
+*.out
+
+# macOS
+.DS_Store

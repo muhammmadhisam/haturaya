@@ -1,0 +1,87 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install services and tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-server \
+    apache2 \
+    curl wget \
+    netcat-openbsd \
+    python3 python3-pip \
+    vim nano \
+    sudo \
+    cron \
+    net-tools iputils-ping \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cryptography so the encrypted Python agent can run
+RUN pip3 install --no-cache-dir cryptography
+
+# ── Users ──────────────────────────────────────────────────────────────────
+RUN useradd -m -s /bin/bash user && \
+    echo "user:password" | chpasswd && \
+    echo "root:toor" | chpasswd
+
+# ── Intentional Misconfigurations (practice targets) ──────────────────────
+
+# 1. Sudo without password for vim (vim escape → root shell)
+RUN echo "user ALL=(ALL) NOPASSWD: /usr/bin/vim" >> /etc/sudoers
+
+# 2. SUID on find (find . -exec /bin/bash -p \; → root)
+RUN chmod u+s /usr/bin/find
+
+# 3. World-writable cron script run as root every minute (cron privesc)
+RUN mkdir -p /opt/scripts && \
+    printf '#!/bin/bash\n/usr/bin/date >> /tmp/heartbeat.log\n' \
+      > /opt/scripts/heartbeat.sh && \
+    chmod 777 /opt/scripts/heartbeat.sh && \
+    echo '* * * * * root /opt/scripts/heartbeat.sh' > /etc/cron.d/heartbeat
+
+# 4. Readable backup of /etc/shadow (credential dump)
+RUN cp /etc/shadow /var/backups/shadow.bak && chmod 644 /var/backups/shadow.bak
+
+# 5. SUID custom binary (simulate vulnerable setuid app)
+COPY docker/vuln.c /tmp/vuln.c
+RUN gcc /tmp/vuln.c -o /usr/local/bin/vuln_app && \
+    chmod u+s /usr/local/bin/vuln_app && \
+    rm /tmp/vuln.c
+
+# ── SSH setup ──────────────────────────────────────────────────────────────
+RUN mkdir /var/run/sshd && \
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/UsePAM yes/UsePAM no/' /etc/ssh/sshd_config
+
+# ── Apache web page ────────────────────────────────────────────────────────
+RUN mkdir -p /var/www/html && \
+    printf '<html><head><title>IntraCorp Portal</title></head><body>\n\
+<h1>IntraCorp Internal Portal</h1>\n\
+<p>Server: Apache/2.4 Ubuntu</p>\n\
+<p>Version: 1.0.0 — <a href="/admin">Admin Panel</a></p>\n\
+</body></html>\n' > /var/www/html/index.html && \
+    mkdir -p /var/www/html/admin && \
+    printf '<html><body><h1>Admin — TODO: add auth</h1></body></html>' \
+      > /var/www/html/admin/index.html
+
+# ── MOTD ───────────────────────────────────────────────────────────────────
+RUN printf '\n\
+  ╔═══════════════════════════════════════╗\n\
+  ║   IntraCorp Linux Server v22.04       ║\n\
+  ║   IP: 172.20.0.3                      ║\n\
+  ╠═══════════════════════════════════════╣\n\
+  ║  Users:  user / password              ║\n\
+  ║          root / toor  (via SSH)       ║\n\
+  ║  Web:    http://172.20.0.3            ║\n\
+  ║  SSH:    ssh user@172.20.0.3          ║\n\
+  ╚═══════════════════════════════════════╝\n\
+' > /etc/motd
+
+EXPOSE 22 80
+
+COPY docker/entrypoint-victim.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
