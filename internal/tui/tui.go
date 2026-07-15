@@ -26,6 +26,16 @@ type Mode int
 const (
 	ModeConsole Mode = iota // main shell — "agents", "generate", etc.
 	ModeAgent               // interacting with a specific agent
+	ModePayload             // interactive payload builder menu
+)
+
+// payloadStep tracks which sub-step of the payload wizard we're in.
+type payloadStep int
+
+const (
+	payloadStepSelect payloadStep = iota // pick shell type
+	payloadStepHost                      // enter lhost
+	payloadStepPort                      // enter lport
 )
 
 // ── Messages ─────────────────────────────────────────────────────────────────
@@ -107,6 +117,12 @@ type Model struct {
 	mode        Mode
 	cursor      int          // highlighted row in sidebar
 	activeAgent *agent.Agent // non-nil when ModeAgent
+
+	// payload wizard state
+	payloadStep  payloadStep
+	payloadShell string // selected shell type
+	payloadLhost string // entered lhost
+	payloadCursor int   // highlighted row in payload menu
 
 	// UI components
 	viewport  viewport.Model
@@ -200,6 +216,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.handleConsoleKey(msg))
 		case ModeAgent:
 			cmds = append(cmds, m.handleAgentKey(msg))
+		case ModePayload:
+			cmds = append(cmds, m.handlePayloadKey(msg))
 		}
 	}
 
@@ -291,6 +309,132 @@ func (m *Model) handleAgentKey(msg tea.KeyMsg) tea.Cmd {
 	}
 }
 
+// handlePayloadKey processes keystrokes in ModePayload.
+func (m *Model) handlePayloadKey(msg tea.KeyMsg) tea.Cmd {
+	shells := append(payload.ShellTypes(), "all")
+
+	switch m.payloadStep {
+
+	case payloadStepSelect:
+		switch msg.Type {
+		case tea.KeyUp:
+			if m.payloadCursor > 0 {
+				m.payloadCursor--
+			}
+		case tea.KeyDown:
+			if m.payloadCursor < len(shells)-1 {
+				m.payloadCursor++
+			}
+		case tea.KeyRunes:
+			switch msg.Runes[0] {
+			case 'k', 'K':
+				if m.payloadCursor > 0 {
+					m.payloadCursor--
+				}
+			case 'j', 'J':
+				if m.payloadCursor < len(shells)-1 {
+					m.payloadCursor++
+				}
+			}
+		case tea.KeyEnter:
+			m.payloadShell = shells[m.payloadCursor]
+			m.payloadStep = payloadStepHost
+			m.textInput.SetValue("")
+			m.textInput.Placeholder = "e.g. 192.168.1.10"
+		case tea.KeyEsc:
+			m.enterConsole()
+		}
+
+	case payloadStepHost:
+		switch msg.Type {
+		case tea.KeyEnter:
+			lhost := strings.TrimSpace(m.textInput.Value())
+			if lhost == "" {
+				return nil
+			}
+			m.payloadLhost = lhost
+			m.payloadStep = payloadStepPort
+			m.textInput.SetValue("9999")
+			m.textInput.Placeholder = "e.g. 9999"
+		case tea.KeyEsc:
+			m.payloadStep = payloadStepSelect
+			m.textInput.SetValue("")
+			m.textInput.Placeholder = ""
+		default:
+			return nil
+		}
+
+	case payloadStepPort:
+		switch msg.Type {
+		case tea.KeyEnter:
+			lport := strings.TrimSpace(m.textInput.Value())
+			if lport == "" {
+				lport = "9999"
+			}
+			m.textInput.SetValue("")
+			m.textInput.Placeholder = ""
+			m.enterConsole()
+			webPort := strconv.Itoa(m.webPort)
+			cats := payload.Build(m.payloadLhost, lport, webPort)
+			pDir := payload.PayloadsDir()
+			if err := payload.WriteAgent(m.payloadLhost, lport, m.cipher.KeyHex(), pDir); err != nil {
+				m.appendLine(rawStyle.Render(fmt.Sprintf("[!] agent.py: %v", err)))
+			}
+			if err := payload.WriteXLSM(m.payloadLhost, lport, pDir); err != nil {
+				m.appendLine(rawStyle.Render(fmt.Sprintf("[!] payload.xlsm: %v", err)))
+			}
+			targetKey := strings.ToUpper(m.payloadShell)
+			var toShow map[string][]payload.Entry
+			if targetKey == "ALL" {
+				toShow = cats
+			} else {
+				toShow = map[string][]payload.Entry{targetKey: cats[targetKey]}
+			}
+			order := []string{"BASH", "SH", "PYTHON", "PERL", "RUBY", "PHP",
+				"NETCAT", "SOCAT", "OPENSSL", "POWERSHELL", "OTHER", "EXCEL"}
+			m.appendLine(encStyle.Render(fmt.Sprintf("══ %s payloads — %s:%s ══", m.payloadShell, m.payloadLhost, lport)))
+			for _, cat := range order {
+				entries, ok := toShow[cat]
+				if !ok || len(entries) == 0 {
+					continue
+				}
+				if targetKey == "ALL" {
+					m.appendLine(encStyle.Render(fmt.Sprintf("── %s", cat)))
+				}
+				for i, e := range entries {
+					m.appendLine(fmt.Sprintf("  [%d] %s", i+1, rawStyle.Render(e.Label)))
+					m.appendLine(fmt.Sprintf("      %s", e.Payload))
+					m.appendLine("")
+				}
+			}
+			m.appendLine(encStyle.Render(fmt.Sprintf("[KEY] %s", m.cipher.KeyHex())))
+		case tea.KeyEsc:
+			m.payloadStep = payloadStepHost
+			m.textInput.SetValue(m.payloadLhost)
+			m.textInput.Placeholder = "e.g. 192.168.1.10"
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+func (m *Model) enterPayloadMenu() {
+	m.mode = ModePayload
+	m.payloadStep = payloadStepSelect
+	m.payloadCursor = 0
+	m.payloadShell = ""
+	m.payloadLhost = ""
+	m.textInput.SetValue("")
+	m.textInput.Placeholder = ""
+}
+
+func (m *Model) enterConsole() {
+	m.mode = ModeConsole
+	m.textInput.SetValue("")
+	m.textInput.Placeholder = ""
+}
+
 // switchToAgent transitions to ModeAgent for the given agent.
 func (m *Model) switchToAgent(a *agent.Agent) {
 	m.activeAgent = a
@@ -312,7 +456,14 @@ func (m *Model) View() string {
 	}
 
 	statusBar := m.renderStatusBar()
-	body := m.renderBody()
+
+	var body string
+	if m.mode == ModePayload {
+		body = m.renderPayloadMenu()
+	} else {
+		body = m.renderBody()
+	}
+
 	inputLine := m.renderInputLine()
 
 	return lipgloss.JoinVertical(lipgloss.Left, statusBar, body, inputLine)
@@ -396,6 +547,101 @@ func (m *Model) renderSidebar(height int) string {
 	return lipgloss.NewStyle().Width(sidebarWidth).Render(strings.Join(lines, "\n"))
 }
 
+func (m *Model) renderPayloadMenu() string {
+	bodyHeight := m.height - 2
+	if bodyHeight < 1 {
+		bodyHeight = 1
+	}
+
+	shells := append(payload.ShellTypes(), "all")
+
+	// Left panel — shell type list.
+	menuWidth := 22
+	var rows []string
+	rows = append(rows, sidebarHeaderStyle.Render("PAYLOAD TYPE"))
+	rows = append(rows, dimStyle.Render(strings.Repeat("─", menuWidth-1)))
+	for i, s := range shells {
+		cur := "  "
+		if i == m.payloadCursor {
+			cur = cursorStyle.Render("▶ ")
+		}
+		label := strings.ToUpper(s)
+		if i == m.payloadCursor {
+			label = encStyle.Render(label)
+		}
+		rows = append(rows, cur+label)
+	}
+	for len(rows) < bodyHeight {
+		rows = append(rows, "")
+	}
+	if len(rows) > bodyHeight {
+		rows = rows[:bodyHeight]
+	}
+	leftPanel := lipgloss.NewStyle().Width(menuWidth).Render(strings.Join(rows, "\n"))
+
+	// Divider.
+	divLines := make([]string, bodyHeight)
+	for i := range divLines {
+		divLines[i] = borderStyle.Render("│")
+	}
+	divider := strings.Join(divLines, "\n")
+
+	// Right panel — instructions based on current step.
+	rightWidth := m.width - menuWidth - 1
+	var info []string
+
+	selected := ""
+	if m.payloadCursor < len(shells) {
+		selected = strings.ToUpper(shells[m.payloadCursor])
+	}
+
+	switch m.payloadStep {
+	case payloadStepSelect:
+		info = append(info,
+			encStyle.Render("── Payload Builder ──"),
+			"",
+			fmt.Sprintf("  Selected : %s", rawStyle.Render(selected)),
+			"",
+			dimStyle.Render("  ↑ / ↓   navigate"),
+			dimStyle.Render("  Enter   confirm selection"),
+			dimStyle.Render("  Esc     back to console"),
+		)
+	case payloadStepHost:
+		info = append(info,
+			encStyle.Render("── Payload Builder ──"),
+			"",
+			fmt.Sprintf("  Type     : %s", rawStyle.Render(strings.ToUpper(m.payloadShell))),
+			"",
+			encStyle.Render("  Enter LHOST (attacker IP):"),
+			"",
+			dimStyle.Render("  Enter   confirm"),
+			dimStyle.Render("  Esc     back"),
+		)
+	case payloadStepPort:
+		info = append(info,
+			encStyle.Render("── Payload Builder ──"),
+			"",
+			fmt.Sprintf("  Type     : %s", rawStyle.Render(strings.ToUpper(m.payloadShell))),
+			fmt.Sprintf("  LHOST    : %s", rawStyle.Render(m.payloadLhost)),
+			"",
+			encStyle.Render("  Enter LPORT (default 9999):"),
+			"",
+			dimStyle.Render("  Enter   generate"),
+			dimStyle.Render("  Esc     back"),
+		)
+	}
+
+	for len(info) < bodyHeight {
+		info = append(info, "")
+	}
+	if len(info) > bodyHeight {
+		info = info[:bodyHeight]
+	}
+	rightPanel := lipgloss.NewStyle().Width(rightWidth).Render(strings.Join(info, "\n"))
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, divider, rightPanel)
+}
+
 func (m *Model) renderInputLine() string {
 	var prefix string
 	switch m.mode {
@@ -405,6 +651,15 @@ func (m *Model) renderInputLine() string {
 				fmt.Sprintf("[AGENT %d] %s$ ", m.activeAgent.Index, m.activeAgent.Hostname))
 		} else {
 			prefix = inputPrefixStyle.Render("[AGENT] $ ")
+		}
+	case ModePayload:
+		switch m.payloadStep {
+		case payloadStepHost:
+			prefix = inputPrefixStyle.Render("[LHOST] > ")
+		case payloadStepPort:
+			prefix = inputPrefixStyle.Render("[LPORT] > ")
+		default:
+			return dimStyle.Render("  ↑ / ↓  select   Enter  confirm   Esc  cancel")
 		}
 	default:
 		prefix = inputPrefixStyle.Render("[CONSOLE] > ")
@@ -458,6 +713,9 @@ func (m *Model) dispatchConsole(line string) tea.Cmd {
 
 	case cmd == "agents" || cmd == "list":
 		m.appendAgentTable()
+
+	case cmd == "payloads" || cmd == "payload":
+		m.enterPayloadMenu()
 
 	case cmd == "use" && len(parts) == 2:
 		m.cmdUse(parts[1])
@@ -623,6 +881,7 @@ func (m *Model) appendHelp() {
 		"  exit / quit                       Shutdown the framework",
 		"",
 		rawStyle.Render("Payload generation:"),
+		"  payloads                          Open interactive payload builder menu",
 		"  generate payloads lhost=<ip> lport=<port> [shell=<type>]",
 		"  Shell types: bash sh python perl ruby php netcat socat openssl powershell other excel all",
 		"",
